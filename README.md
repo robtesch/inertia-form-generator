@@ -1,84 +1,145 @@
-# A package to transform your Laravel FormRequests into type-safe Inertia forms
+# Inertia Form Generator
 
-[![Latest Version on Packagist](https://img.shields.io/packagist/v/robtesch/inertia-form-generator.svg?style=flat-square)](https://packagist.org/packages/robtesch/inertia-form-generator)
-[![GitHub Tests Action Status](https://img.shields.io/github/actions/workflow/status/robtesch/inertia-form-generator/run-tests.yml?branch=main&label=tests&style=flat-square)](https://github.com/robtesch/inertia-form-generator/actions?query=workflow%3Arun-tests+branch%3Amain)
-[![GitHub Code Style Action Status](https://img.shields.io/github/actions/workflow/status/robtesch/inertia-form-generator/fix-php-code-style-issues.yml?branch=main&label=code%20style&style=flat-square)](https://github.com/robtesch/inertia-form-generator/actions?query=workflow%3A"Fix+PHP+code+style+issues"+branch%3Amain)
-[![Total Downloads](https://img.shields.io/packagist/dt/robtesch/inertia-form-generator.svg?style=flat-square)](https://packagist.org/packages/robtesch/inertia-form-generator)
+A small Laravel package that transforms your Laravel FormRequest validation rules into type-safe TypeScript definitions and ready-to-use Inertia useForm initializers.
 
-This is where your description should go. Limit it to a paragraph or two. Consider adding a small example.
+The package parses FormRequest classes in app/Http/Requests, maps validation rules to TypeScript types (with support for class-based validation rules, enums and custom mappings), and exports a single TypeScript file with exported types and useForm instances for your front-end.
 
-## Support us
+### Features
 
-[<img src="https://github-ads.s3.eu-central-1.amazonaws.com/inertia-form-generator.jpg?t=1" width="419px" />](https://spatie.be/github-ad-click/inertia-form-generator)
+- Generates TypeScript type definitions from Laravel FormRequest rules.
+- Generates Inertia useForm initializers for Vue, React or Svelte.
+- Supports PHP 8.x enums used with the Enum validation rule.
+- Allows custom type mappings via configuration.
+- Command-line generator: php artisan inertia-form-generator:generate
 
-We invest a lot of resources into creating [best in class open source packages](https://spatie.be/open-source). You can support us by [buying one of our paid products](https://spatie.be/open-source/support-us).
+### Requirements
 
-We highly appreciate you sending us a postcard from your hometown, mentioning which of our package(s) you are using. You'll find our address on [our contact page](https://spatie.be/about-us). We publish all received postcards on [our virtual postcard wall](https://spatie.be/open-source/postcards).
+- PHP: ^8.4 (as declared in composer.json)
+- Laravel 9/10/11 compatible components (package depends on illuminate/* components via composer)
 
-## Installation
+### Installation
 
-You can install the package via composer:
+1. Install with Composer:
 
 ```bash
 composer require robtesch/inertia-form-generator
 ```
 
-You can publish and run the migrations with:
+2. Publish the configuration file (so you can change output path, front-end provider, custom mappings, etc.):
+
+You can publish the config using either the provider or the package tag:
 
 ```bash
-php artisan vendor:publish --tag="inertia-form-generator-migrations"
-php artisan migrate
-```
+# By provider
+php artisan vendor:publish --provider="RobTesch\InertiaFormGenerator\InertiaFormGeneratorServiceProvider" --tag="config"
 
-You can publish the config file with:
-
-```bash
+# Or by tag (some projects may prefer this tag name)
 php artisan vendor:publish --tag="inertia-form-generator-config"
 ```
 
-This is the contents of the published config file:
+### Configuration
 
-```php
-return [
-];
-```
+The published config file config/inertia-form-generator.php contains the key options:
 
-Optionally, you can publish the views using
+- output-file-path: string — Path where the generated TypeScript file will be written. Default: resources/js/formRequests.ts
+- front-end-provider: string — One of: 'vue', 'react', 'svelte4', 'svelte5' (controls which useForm import is used). Default: 'vue'
+- user-model: string|null — Fully qualified user model used to create a fake user when FormRequests rely on an authenticated user. Default: 'App\\Models\\User'
+- custom_mappings: array — Map validation rule class names or string rule names to custom TypeScript type strings. Example: ['App\\Rules\\YourCustomRule' => 'string | null']
+
+See config/inertia-form-generator.php for the exact defaults shipped with the package.
+
+### Usage
+
+1. Create or ensure you have FormRequest classes under app/Http/Requests with rules() defined as usual.
+
+2. Run the generator command to produce the TypeScript file:
 
 ```bash
-php artisan vendor:publish --tag="inertia-form-generator-views"
+php artisan inertia-form-generator:generate
 ```
 
-## Usage
+By default the command writes to the path configured in config/inertia-form-generator.php (resources/js/formRequests.ts by default) and prints the resulting path.
+
+#### What gets generated
+
+For each FormRequest found, the package will export a TypeScript type and a useForm initializer. Example output (illustrative):
+
+```ts
+import { useForm } from '@inertiajs/vue3';
+
+export type ExampleRequest = {
+  name: string;
+  age: number | null;
+}
+
+export const exampleRequestForm = useForm({
+  name: '',
+  age: null,
+} satisfies ExampleRequest);
+```
+
+Once you have generated your TypeScript file, you can simply import the form you need in your front-end code.
+
+```vue
+// ExampleComponent.vue
+<script setup lang="ts">
+import { exampleRequestForm } from '@/js/formRequests';
+</script>
+
+<template>
+  <form @submit.prevent="exampleRequestForm.post('/example-request')">
+    <input v-model="exampleRequestForm.name" type="text" />
+    <input v-model="exampleRequestForm.age" type="number" />
+    <button type="submit">Submit</button>
+  </form>
+</template>
+```
+
+You will benefit from type-safety and all of Inertia's amazing useForm features.
+
+### Notes and behavior
+
+- The generator maps common validation rules (string, integer, numeric, boolean, array, file, etc.) to TypeScript types. Complex or custom rule objects can be mapped by adding entries to custom_mappings in the config.
+- Enum validation rules are supported; the generator will attempt to map PHP enums to a TypeScript string literal union and will set an initial value using the first enum case when possible.
+- If a FormRequest needs an authenticated user, set the user-model config to a model that has a factory so the generator can instantiate a fake user during parsing. If you don't need this behavior, set user-model to null.
+- The package uses auto-discovery (service provider is registered via composer extra) and registers a single Artisan command: inertia-form-generator:generate.
+
+### Extending and Custom Mappings
+
+Add mappings for custom rule classes or rule names in config/inertia-form-generator.php under the custom_mappings key. The key should be the validation rule string or the full class name of the rule, and the value should be the TypeScript type string you want to emit.
+
+#### Example:
 
 ```php
-$inertiaFormGenerator = new RobTesch\InertiaFormGenerator();
-echo $inertiaFormGenerator->echoPhrase('Hello, RobTesch!');
+'custom_mappings' => [
+    App\Rules\GeoPoint::class => 'CustomPointInterface | null',
+    'binary' => 'Blob',
+],
 ```
 
-## Testing
+### Testing
+
+Run the package tests with:
 
 ```bash
 composer test
 ```
 
-## Changelog
+### Development notes
 
-Please see [CHANGELOG](CHANGELOG.md) for more information on what has changed recently.
+- Primary PHP entrypoint: src/InertiaFormGenerator.php
+- Artisan command implementation: src/Commands/InertiaFormGeneratorCommand.php
+- Package service provider: src/InertiaFormGeneratorServiceProvider.php
+- Default config: config/inertia-form-generator.php
 
-## Contributing
+### License
 
-Please see [CONTRIBUTING](CONTRIBUTING.md) for details.
+This package is open-source under the MIT License — see LICENSE.md for details.
 
-## Security Vulnerabilities
+### Contributing
 
-Please review [our security policy](../../security/policy) on how to report security vulnerabilities.
+This package has primarily been developed and tested with my specific use case in mind. Fixes and improvements are welcome. Please open issues or pull requests on the project repository and follow the coding standards and test suites included in the package.
 
-## Credits
+### Credits
 
-- [Robert Teschmacher](https://github.com/robtesch)
-- [All Contributors](../../contributors)
-
-## License
-
-The MIT License (MIT). Please see [License File](LICENSE.md) for more information.
+- Author: Robert Teschmacher

@@ -18,8 +18,6 @@ class InertiaFormGeneratorServiceProvider extends PackageServiceProvider
         $package
             ->name('inertia-form-generator')
             ->hasConfigFile()
-            ->hasViews()
-            ->hasMigration('create_inertia_form_generator_table')
             ->hasCommand(InertiaFormGeneratorCommand::class);
     }
 }
