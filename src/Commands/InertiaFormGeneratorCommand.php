@@ -1,12 +1,12 @@
 <?php
 
-namespace VendorName\Skeleton\Commands;
+namespace RobTesch\InertiaFormGenerator\Commands;
 
 use Illuminate\Console\Command;
 
-class SkeletonCommand extends Command
+class InertiaFormGeneratorCommand extends Command
 {
-    public $signature = 'skeleton';
+    public $signature = 'inertia-form-generator';
 
     public $description = 'My command';
 

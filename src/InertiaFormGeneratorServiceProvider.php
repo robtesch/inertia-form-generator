@@ -1,12 +1,12 @@
 <?php
 
-namespace VendorName\Skeleton;
+namespace RobTesch\InertiaFormGenerator;
 
+use RobTesch\InertiaFormGenerator\Commands\InertiaFormGeneratorCommand;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
-use VendorName\Skeleton\Commands\SkeletonCommand;
 
-class SkeletonServiceProvider extends PackageServiceProvider
+class InertiaFormGeneratorServiceProvider extends PackageServiceProvider
 {
     public function configurePackage(Package $package): void
     {
@@ -16,10 +16,10 @@ class SkeletonServiceProvider extends PackageServiceProvider
          * More info: https://github.com/spatie/laravel-package-tools
          */
         $package
-            ->name('skeleton')
+            ->name('inertia-form-generator')
             ->hasConfigFile()
             ->hasViews()
-            ->hasMigration('create_migration_table_name_table')
-            ->hasCommand(SkeletonCommand::class);
+            ->hasMigration('create_inertia_form_generator_table')
+            ->hasCommand(InertiaFormGeneratorCommand::class);
     }
 }
