@@ -2,6 +2,14 @@
 
 All notable changes to `inertia-form-generator` will be documented in this file.
 
+## Change output style - 2025-09-08
+
+### BREAKING
+
+- Changes the output style to just having forms rather than separate forms and types.
+
+**Full Changelog**: https://github.com/robtesch/inertia-form-generator/compare/v1.0.1...v2.0.0
+
 ## v1.0.1 - 2025-09-05
 
 Updated github test runners
