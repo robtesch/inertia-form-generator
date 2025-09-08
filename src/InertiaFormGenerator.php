@@ -46,6 +46,8 @@ class InertiaFormGenerator
     {
         $files = File::allFiles(app_path('Http/Requests'));
 
+        $excluded = Config::get('inertia-form-generator.exclude', []);
+
         $formRequests = [];
 
         foreach ($files as $file) {
@@ -54,6 +56,10 @@ class InertiaFormGenerator
 
             /** @var class-string $class */
             $class = 'App\\Http\\Requests\\'.$classPath;
+
+            if (in_array($class, $excluded, true)) {
+                continue;
+            }
 
             $reflection = new ReflectionClass($class);
 
@@ -104,7 +110,7 @@ class InertiaFormGenerator
 
     /**
      * @param  FormRequest[]  $formRequests
-     * @return list<array{formName: string, typeName: string, type: string, initial: string}>
+     * @return list<array{formName: string, initial: string}>
      *
      * @throws ReflectionException
      */
@@ -135,12 +141,6 @@ class InertiaFormGenerator
             // sort the keys alphabetically
             ksort($cleaned);
 
-            $asType = '{'.PHP_EOL;
-            foreach ($cleaned as $key => $val) {
-                $asType .= $this->extractLine($key, $val, '  ');
-            }
-            $asType .= '}';
-
             $class = get_class($instance);
             $typeName = str_replace('App\\Http\\Requests\\', '', $class);
             $typeName = str_replace('\\', '', $typeName);
@@ -149,14 +149,8 @@ class InertiaFormGenerator
 
             $initial = $this->buildInitialFromCleaned($cleaned);
 
-            //            if(Str::contains($typeName, 'AgentsUpdateGroupMailboxesRequest')) {
-            //                dd($cleaned);
-            //            }
-
             $transformed[] = [
                 'formName' => $formName->toString(),
-                'typeName' => $typeName,
-                'type' => $asType,
                 'initial' => $initial,
             ];
         }
@@ -400,43 +394,6 @@ class InertiaFormGenerator
     }
 
     /**
-     * @param  string|array<string, mixed>  $val
-     */
-    protected function extractLine(string $key, string|array $val, string $indent): string
-    {
-        $isArrayOf = str_contains($key, '_array_of');
-        $isNullable = str_contains($key, '_nullable');
-        $key = str_replace('_array_of', '', $key);
-        $key = str_replace('_nullable', '', $key);
-        if (str_contains($key, ' ') || str_contains($key, '-')) {
-            // wrap the key with quotes, but must be before the ? if it's there.
-            $key = '"'.$key.'"';
-        }
-
-        $result = '';
-        if (is_array($val)) {
-            $result .= "$key: {".PHP_EOL;
-            foreach ($val as $k => $v) {
-                $result .= $this->extractLine($k, $v, $indent.'  ');
-            }
-            if ($isArrayOf) {
-                $result .= $indent.'}[]'.($isNullable ? ' | null;' : ';').PHP_EOL;
-            } else {
-                $result .= $indent.'}'.($isNullable ? ' | null;' : ';').PHP_EOL;
-            }
-        } else {
-            if ($isArrayOf) {
-                $val = str_replace(';', '', $val);
-                $result .= $key.': Array<'.$val.'>'.($isNullable && ! str_contains($val, '| null') ? ' | null;' : ';').PHP_EOL;
-            } else {
-                $result .= "$key: $val".($isNullable && ! str_contains($val, '| null') ? ' | null' : '').PHP_EOL;
-            }
-        }
-
-        return $indent.$result;
-    }
-
-    /**
      * @param  array<string, mixed>  $cleaned
      */
     private function buildInitialFromCleaned(array $cleaned): string
@@ -479,7 +436,19 @@ class InertiaFormGenerator
                 // leaf: $val is a TS type string like "string", "number", "boolean", "File", "unknown[]", unions, etc.
                 $ts = (string) $val;
 
-                $default = $this->defaultForTsType($ts, $isNullable, $isArrayOf);
+                $asType = rtrim($ts, ';');
+                if ($asType === 'unknown') {
+                    $asString = '';
+                } else {
+                    $asType .= ' | undefined';
+                    if ($isArrayOf) {
+                        $asType = 'Array<'.$asType.'>';
+                    }
+
+                    $asString = ' as '.$asType;
+                }
+
+                $default = $this->defaultForTsType($ts, $isNullable, $isArrayOf).$asString;
 
                 $out[] = $indent.$key.': '.$default.','.PHP_EOL;
             }
@@ -493,6 +462,7 @@ class InertiaFormGenerator
      */
     private function defaultForTsType(string $ts, bool $nullable, bool $arrayOf): string
     {
+
         // if we have a set of literal string values, pick the first one
         if (! $arrayOf && str_contains($ts, '|')) {
             $parts = explode('|', $ts);

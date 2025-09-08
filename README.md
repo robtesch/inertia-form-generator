@@ -22,7 +22,7 @@ The package parses FormRequest classes in app/Http/Requests, maps validation rul
 1. Install with Composer:
 
 ```bash
-composer require robtesch/inertia-form-generator
+composer require robtesch/inertia-form-generator --dev
 ```
 
 2. Publish the configuration file (so you can change output path, front-end provider, custom mappings, etc.):
@@ -67,14 +67,9 @@ For each FormRequest found, the package will export a TypeScript type and a useF
 ```ts
 import { useForm } from '@inertiajs/vue3';
 
-export type ExampleRequest = {
-  name: string;
-  age: number | null;
-}
-
 export const exampleRequestForm = useForm({
-  name: '',
-  age: null,
+  name: '' as string,
+  age: null as number | null,
 } satisfies ExampleRequest);
 ```
 
@@ -84,6 +79,14 @@ Once you have generated your TypeScript file, you can simply import the form you
 // ExampleComponent.vue
 <script setup lang="ts">
 import { exampleRequestForm } from '@/js/formRequests';
+import { usePage } from '@inertiajs/vue3';
+
+const page = usePage();
+//Optionally set default values
+exampleRequestForm.defaults({
+  name: page.props.auth.user.name,
+  age: page.props.auth.user.age,
+});
 </script>
 
 <template>
@@ -108,12 +111,20 @@ You will benefit from type-safety and all of Inertia's amazing useForm features.
 
 Add mappings for custom rule classes or rule names in config/inertia-form-generator.php under the custom_mappings key. The key should be the validation rule string or the full class name of the rule, and the value should be the TypeScript type string you want to emit.
 
-#### Example:
-
 ```php
 'custom_mappings' => [
     App\Rules\GeoPoint::class => 'CustomPointInterface | null',
     'binary' => 'Blob',
+],
+```
+
+### Excluding FormRequests
+
+You can exclude FormRequests from being parsed by adding them to the exclude array in the config. This can be useful in cases where the validation is particularly complex and this generator is not able to parse it correctly.
+
+```php
+'exclude' => [
+    \App\Http\Requests\ExampleRequest::class,
 ],
 ```
 

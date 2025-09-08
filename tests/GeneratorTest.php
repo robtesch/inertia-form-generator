@@ -30,7 +30,7 @@ it('maps basic validation rules to types and initial values', function () {
     $item = $transformed[0];
 
     // type should include name and age
-    expect($item['type'])->toContain('name')->toContain('age');
+    expect($item['initial'])->toContain('name')->toContain('age');
 
     // initial should have sensible defaults: name -> '', age -> null (nullable)
     expect($item['initial'])->toContain("name: ''")->toContain('age: null');
@@ -56,7 +56,7 @@ it('handles array rules and defaults arrays to []', function () {
 
     $item = $transformed[0];
 
-    expect($item['type'])->toContain('tags');
+    expect($item['formName'])->toContain('illuminateFoundationHttpFormRequest');
     expect($item['initial'])->toContain('tags: []');
 });
 
@@ -103,7 +103,7 @@ it('maps Enum rule to a referenced enum type in the emitted type', function () {
     $item = $transformed[0];
 
     // the generated TS type should reference the enum type name (dot-separated)
-    expect($item['type'])->toContain('Status');
+    expect($item['initial'])->toContain('status')->toContain('active');
 });
 
 it('respects custom mappings from configuration', function () {
@@ -131,7 +131,7 @@ it('respects custom mappings from configuration', function () {
     $item = $transformed[0];
 
     // The emitted TS type should use the custom mapping
-    expect($item['type'])->toContain('CustomStringType');
+    expect($item['initial'])->toContain('CustomStringType');
 });
 
 it('returns correct useForm import for each supported provider and errors on unsupported', function () {

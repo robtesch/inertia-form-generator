@@ -51,4 +51,15 @@ return [
     | 'year' => 'string',
     */
     'custom_mappings' => [],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Excluded Form Request Classes
+    |--------------------------------------------------------------------------
+    |
+    | There may be some form requests that you do not want to generate
+    | TypeScript definitions for. You can add them to this array to exclude
+    | them from the output.
+    */
+    'exclude' => [],
 ];
