@@ -44,7 +44,9 @@ class InertiaFormGenerator
      */
     public function getFormRequests(): array
     {
-        $files = File::allFiles(app_path('Http/Requests'));
+        $files = File::allFiles(app_path());
+
+        $psr4 = $this->psr4FromComposer(base_path());
 
         $excluded = Config::get('inertia-form-generator.exclude', []);
 
@@ -55,9 +57,13 @@ class InertiaFormGenerator
             $classPath = str_replace('.php', '', $classPath);
 
             /** @var class-string $class */
-            $class = 'App\\Http\\Requests\\'.$classPath;
+            $class = 'App\\'.$classPath;
 
             if (in_array($class, $excluded, true)) {
+                continue;
+            }
+
+            if (! class_exists($class)) {
                 continue;
             }
 
@@ -70,7 +76,80 @@ class InertiaFormGenerator
             }
         }
 
+        foreach(Config::get('inertia-form-generator.additional_paths', []) as $path) {
+            $files = File::allFiles($path);
+
+            foreach ($files as $file) {
+                $classPath = $file->getBasename();
+                $classPath = str_replace('.php', '', $classPath);
+
+                $class = $classPath;
+
+                foreach ($psr4 as $namespace => $namespacePath) {
+                    if(str_starts_with($file->getPath(), $namespacePath)) {
+                        $correctedPath = str_replace($namespacePath, $namespace, $file->getPath());
+                        $correctedPath = str_replace('/', '\\', $correctedPath);
+                        $class = $correctedPath.'\\'.$classPath;
+                        break;
+                    }
+                }
+
+                if (! class_exists($class)) {
+                    continue;
+                }
+
+                if (in_array($class, $excluded, true)) {
+                    continue;
+                }
+
+                $reflection = new ReflectionClass($class);
+
+                if ($reflection->isSubclassOf(FormRequest::class)) {
+                    $instance = $this->createFormRequestInstance($reflection);
+
+                    $formRequests[] = $instance;
+                }
+            }
+        }
+
         return $formRequests;
+    }
+
+    private function psr4FromComposer(string $projectRoot): array
+    {
+        $composerFile = rtrim($projectRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'composer.json';
+
+        if (!is_file($composerFile)) {
+            throw new \RuntimeException("composer.json not found at {$composerFile}");
+        }
+
+        $json = json_decode(file_get_contents($composerFile), true, flags: JSON_THROW_ON_ERROR);
+
+        $psr4 = [];
+
+        foreach (['autoload', 'autoload-dev'] as $section) {
+            if (!isset($json[$section]['psr-4'])) {
+                continue;
+            }
+
+            foreach ($json[$section]['psr-4'] as $namespace => $paths) {
+                foreach ((array) $paths as $path) {
+                    $absolute = realpath(
+                        rtrim($projectRoot, DIRECTORY_SEPARATOR)
+                        . DIRECTORY_SEPARATOR
+                        . rtrim($path, DIRECTORY_SEPARATOR)
+                    );
+
+                    if ($absolute === false) {
+                        continue;
+                    }
+
+                    $psr4[$namespace] = rtrim($absolute, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+                }
+            }
+        }
+
+        return $psr4;
     }
 
     /**

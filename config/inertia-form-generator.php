@@ -62,4 +62,14 @@ return [
     | them from the output.
     */
     'exclude' => [],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Additional Paths
+    |--------------------------------------------------------------------------
+    |
+    | Additional Paths allows you to specify paths external to laravel to search for form requests
+    | (ex. ./vendors/package/with/formRequests)
+    */
+    'additional_paths' => [],
 ];
