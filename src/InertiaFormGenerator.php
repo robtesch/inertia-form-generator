@@ -76,7 +76,7 @@ class InertiaFormGenerator
             }
         }
 
-        foreach(Config::get('inertia-form-generator.additional_paths', []) as $path) {
+        foreach (Config::get('inertia-form-generator.additional_paths', []) as $path) {
             $files = File::allFiles($path);
 
             foreach ($files as $file) {
@@ -86,7 +86,7 @@ class InertiaFormGenerator
                 $class = $classPath;
 
                 foreach ($psr4 as $namespace => $namespacePath) {
-                    if(str_starts_with($file->getPath(), $namespacePath)) {
+                    if (str_starts_with($file->getPath(), $namespacePath)) {
                         $correctedPath = str_replace($namespacePath, $namespace, $file->getPath());
                         $correctedPath = str_replace('/', '\\', $correctedPath);
                         $class = $correctedPath.'\\'.$classPath;
@@ -117,9 +117,9 @@ class InertiaFormGenerator
 
     private function psr4FromComposer(string $projectRoot): array
     {
-        $composerFile = rtrim($projectRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'composer.json';
+        $composerFile = rtrim($projectRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'composer.json';
 
-        if (!is_file($composerFile)) {
+        if (! is_file($composerFile)) {
             throw new \RuntimeException("composer.json not found at {$composerFile}");
         }
 
@@ -128,7 +128,7 @@ class InertiaFormGenerator
         $psr4 = [];
 
         foreach (['autoload', 'autoload-dev'] as $section) {
-            if (!isset($json[$section]['psr-4'])) {
+            if (! isset($json[$section]['psr-4'])) {
                 continue;
             }
 
@@ -136,15 +136,15 @@ class InertiaFormGenerator
                 foreach ((array) $paths as $path) {
                     $absolute = realpath(
                         rtrim($projectRoot, DIRECTORY_SEPARATOR)
-                        . DIRECTORY_SEPARATOR
-                        . rtrim($path, DIRECTORY_SEPARATOR)
+                        .DIRECTORY_SEPARATOR
+                        .rtrim($path, DIRECTORY_SEPARATOR)
                     );
 
                     if ($absolute === false) {
                         continue;
                     }
 
-                    $psr4[$namespace] = rtrim($absolute, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+                    $psr4[$namespace] = rtrim($absolute, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
                 }
             }
         }
