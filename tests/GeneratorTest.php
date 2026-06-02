@@ -8,6 +8,7 @@ use Illuminate\Validation\Rule;
 use InvalidArgumentException;
 use RobTesch\InertiaFormGenerator\InertiaFormGenerator;
 use RobTesch\InertiaFormGenerator\Tests\Fixtures\Enums\Status;
+use RobTesch\InertiaFormGenerator\Tests\Fixtures\Enums\Version;
 
 it('maps basic validation rules to types and initial values', function () {
     $generator = new InertiaFormGenerator;
@@ -103,7 +104,31 @@ it('maps Enum rule to a referenced enum type in the emitted type', function () {
     $item = $transformed[0];
 
     // the generated TS type should reference the enum type name (dot-separated)
-    expect($item['initial'])->toContain('status')->toContain('active');
+    expect($item['initial'])->toContain('status')->toContain("'active'");
+});
+
+it('maps int-backed Enum rule to an unquoted numeric default', function () {
+    $generator = new InertiaFormGenerator;
+
+    $request = new class extends FormRequest
+    {
+        public function rules(): array
+        {
+            return [
+                'version' => Rule::enum(Version::class),
+            ];
+        }
+    };
+
+    $transformed = $generator->transformRequests([$request]);
+
+    expect(count($transformed))->toBe(1);
+
+    $item = $transformed[0];
+
+    expect($item['initial'])->toContain('version: 1')
+        ->not->toContain("'1'")
+        ->not->toContain('"1"');
 });
 
 it('respects custom mappings from configuration', function () {
