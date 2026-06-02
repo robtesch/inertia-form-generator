@@ -612,6 +612,11 @@ class InertiaFormGenerator
                 }
 
                 $firstValue = $cases[0]->value;
+
+                if (is_int($firstValue)) {
+                    return (string) $firstValue;
+                }
+
                 // replace any \ with \\
                 $firstValue = str_replace('\\', '\\\\', $firstValue);
 
