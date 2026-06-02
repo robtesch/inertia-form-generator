@@ -115,6 +115,9 @@ class InertiaFormGenerator
         return $formRequests;
     }
 
+    /**
+     * @return array<string, string>
+     */
     private function psr4FromComposer(string $projectRoot): array
     {
         $composerFile = rtrim($projectRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'composer.json';
@@ -123,7 +126,12 @@ class InertiaFormGenerator
             throw new \RuntimeException("composer.json not found at {$composerFile}");
         }
 
-        $json = json_decode(file_get_contents($composerFile), true, flags: JSON_THROW_ON_ERROR);
+        $contents = file_get_contents($composerFile);
+        if ($contents === false) {
+            throw new \RuntimeException("Unable to read composer.json at {$composerFile}");
+        }
+
+        $json = json_decode($contents, true, flags: JSON_THROW_ON_ERROR);
 
         $psr4 = [];
 
