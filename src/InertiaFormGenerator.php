@@ -265,11 +265,8 @@ class InertiaFormGenerator
                     continue;
                 }
 
-                $transformed[] = [
-                    'name' => $name,
-                    'type' => $this->renderType($tree, ''),
-                    'initial' => $this->renderInitial($tree, ''),
-                ];
+                $form = $this->renderObject($tree, '');
+                $transformed[] = ['name' => $name, 'type' => $form['type'], 'initial' => $form['default']];
                 $names[$name] = $class;
             } catch (Throwable $e) {
                 $this->warnings[] = "Skipped {$class}: {$e->getMessage()}";
@@ -492,31 +489,29 @@ class InertiaFormGenerator
     }
 
     /**
+     * Render an object's type and initial value in one pass, so each node is visited once.
+     *
      * @param  array<string, Node>  $children
+     * @return Field
      */
-    private function renderType(array $children, string $indent): string
+    private function renderObject(array $children, string $indent): array
     {
-        $lines = [];
+        $types = [];
+        $defaults = [];
 
         foreach ($children as $key => $node) {
-            $lines[] = $indent.self::INDENT.$this->propertyKey($key).': '.$this->nodeField($node, $indent.self::INDENT)['type'].';';
+            $field = $this->nodeField($node, $indent.self::INDENT);
+            $prefix = $indent.self::INDENT.$this->propertyKey($key).': ';
+            $types[] = $prefix.$field['type'].';';
+            $defaults[] = $prefix.$field['default'].',';
         }
 
-        return '{'.PHP_EOL.implode(PHP_EOL, $lines).PHP_EOL.$indent.'}';
-    }
+        $close = PHP_EOL.$indent.'}';
 
-    /**
-     * @param  array<string, Node>  $children
-     */
-    private function renderInitial(array $children, string $indent): string
-    {
-        $lines = [];
-
-        foreach ($children as $key => $node) {
-            $lines[] = $indent.self::INDENT.$this->propertyKey($key).': '.$this->nodeField($node, $indent.self::INDENT)['default'].',';
-        }
-
-        return '{'.PHP_EOL.implode(PHP_EOL, $lines).PHP_EOL.$indent.'}';
+        return [
+            'type' => '{'.PHP_EOL.implode(PHP_EOL, $types).$close,
+            'default' => '{'.PHP_EOL.implode(PHP_EOL, $defaults).$close,
+        ];
     }
 
     /**
@@ -546,10 +541,7 @@ class InertiaFormGenerator
             $field = $this->scalarField($rules);
         } elseif ($named !== []) {
             // Named children ("translations.en") describe an object, even alongside a wildcard.
-            $field = [
-                'type' => $this->renderType($named, $indent),
-                'default' => $this->renderInitial($named, $indent),
-            ];
+            $field = $this->renderObject($named, $indent);
         } else {
             $elementType = $this->nodeField($children['*'], $indent, true)['type'];
             $keys = $this->allowedArrayKeys($rules);

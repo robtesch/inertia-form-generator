@@ -213,17 +213,13 @@ it('accepts bare rule objects, closures and fluent rules', function () {
         'pin' => 'digits:4',
         'conditional' => Rule::when(true, ['required', 'integer'], ['nullable', 'string']),
         'otherwise' => Rule::when(false, 'required|integer', 'nullable|string'),
-        'pattern' => ['string', Rule::regex('/^(foo|int|nullable)$/')],
-        'loose' => Rule::regex('/foo|int|bar/'),
         'terms' => 'accepted_if:role,admin',
         'empty' => [Rule::in([])],
         'bag' => 'array:',
         'game' => ['required', 'array', 'required_array_keys:home,away'],
         'game.*' => 'required|string',
-        'score' => ['array', Rule::requiredArrayKeys('home')],
         'huge' => 'numeric|in:1e309,1',
         'secret' => 'required|string|confirmed',
-        'contact' => ['required', 'email', Rule::confirmed()->customField('contact_repeat')],
         'account.password' => 'required|string|confirmed:password_repeat',
         'agree' => 'required|boolean|confirmed',
         'price' => ['decimal:2', Rule::in(['1.00', '0.99'])],
@@ -249,8 +245,6 @@ it('accepts bare rule objects, closures and fluent rules', function () {
         'pin: string;',
         'conditional: number;',
         'otherwise: string | null;',
-        'pattern: string;',
-        'loose: string;',
         'terms: boolean;',
         'empty: string;',
         'bag: any[];',
@@ -258,14 +252,9 @@ it('accepts bare rule objects, closures and fluent rules', function () {
         '  home: string;',
         '  away: string;',
         '};',
-        'score: {',
-        '  home: any;',
-        '};',
         'huge: "1e309" | "1";',
         'secret: string;',
         'secret_confirmation: string;',
-        'contact: string;',
-        'contact_repeat: string;',
         'account: {',
         '  password: string;',
         '};',
@@ -283,6 +272,25 @@ it('accepts bare rule objects, closures and fluent rules', function () {
         'secret2_confirmation: string;',
     ]));
 });
+
+it('accepts fluent rules added in Laravel 13', function () {
+    $form = generate([
+        'pattern' => ['string', Rule::regex('/^(foo|int|nullable)$/')],
+        'loose' => Rule::regex('/foo|int|bar/'),
+        'score' => ['array', Rule::requiredArrayKeys('home')],
+        'contact' => ['required', 'email', Rule::confirmed()->customField('contact_repeat')],
+    ]);
+
+    expect($form['type'])->toBe(block([
+        'pattern: string;',
+        'loose: string;',
+        'score: {',
+        '  home: any;',
+        '};',
+        'contact: string;',
+        'contact_repeat: string;',
+    ]));
+})->skip(fn () => ! method_exists(Rule::class, 'regex'), 'Rule::regex(), requiredArrayKeys() and confirmed() were added in Laravel 13.');
 
 it('adds null and undefined only at the top level of a union', function () {
     $form = generate([
