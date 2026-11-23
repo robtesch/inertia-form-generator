@@ -65,10 +65,7 @@
         "laravel": {
             "providers": [
                 "RobTesch\\InertiaFormGenerator\\InertiaFormGeneratorServiceProvider"
-            ],
-            "aliases": {
-                "InertiaFormGenerator": "RobTesch\\InertiaFormGenerator\\Facades\\InertiaFormGenerator"
-            }
+            ]
         }
     },
     "minimum-stability": "dev",
