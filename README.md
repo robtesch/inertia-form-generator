@@ -15,7 +15,7 @@ The package parses FormRequest classes in app/Http/Requests, maps validation rul
 ### Requirements
 
 - PHP: ^8.4 (as declared in composer.json)
-- Laravel 9/10/11 compatible components (package depends on illuminate/* components via composer)
+- Laravel 12 or 13 (package depends on illuminate/* components via composer)
 
 ### Installation
 
