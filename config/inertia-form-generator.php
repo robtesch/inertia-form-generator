@@ -6,7 +6,8 @@ return [
     | Path for Output TypeScript Definitions File
     |--------------------------------------------------------------------------
     |
-    | Defines the file path where the Inertia forms will be saved.
+    | Defines the file path where the Inertia forms will be saved. Relative paths are
+    | resolved from the project root, and missing directories are created.
     |
     */
     'output-file-path' => 'resources/js/formRequests.ts',
@@ -68,8 +69,9 @@ return [
     | Additional Paths
     |--------------------------------------------------------------------------
     |
-    | Additional Paths allows you to specify paths external to laravel to search for form requests
-    | (ex. ./vendors/package/with/formRequests)
+    | Directories outside app/ to search for form requests, e.g. 'modules/Blog/Http/Requests'
+    | or 'vendor/acme/package/src/Http/Requests'. Relative paths are resolved from the project root.
+    | Classes found here must be loadable by Composer's autoloader.
     */
     'additional_paths' => [],
 ];

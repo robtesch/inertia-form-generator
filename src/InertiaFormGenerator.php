@@ -2,30 +2,64 @@
 
 namespace RobTesch\InertiaFormGenerator;
 
-use Illuminate\Contracts\Validation\Rule;
+use Closure;
+use Illuminate\Contracts\Validation\ParameterizedRule;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Http\Request;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ConditionalRules;
 use Illuminate\Validation\Rules\ArrayRule;
-use Illuminate\Validation\Rules\Dimensions;
+use Illuminate\Validation\Rules\Date;
+use Illuminate\Validation\Rules\Email;
 use Illuminate\Validation\Rules\Enum;
+use Illuminate\Validation\Rules\File as FileRule;
 use Illuminate\Validation\Rules\In;
-use Illuminate\Validation\Rules\RequiredIf;
-use Illuminate\Validation\Rules\Unique;
+use Illuminate\Validation\Rules\Numeric;
+use Illuminate\Validation\Rules\Password;
+use Illuminate\Validation\Rules\StringRule;
 use InvalidArgumentException;
+use PhpToken;
 use ReflectionClass;
-use ReflectionException;
+use Stringable;
+use Throwable;
+use UnitEnum;
 
+/**
+ * @phpstan-type Node array{rules: list<mixed>|null, children: array<string, mixed>}
+ * @phpstan-type Field array{type: string, default: string}
+ * @phpstan-type TransformedRequest array{name: string, type: string, initial: string}
+ */
 class InertiaFormGenerator
 {
+    private const string INDENT = '  ';
+
+    private const array NUMBER_RULES = ['integer', 'int', 'numeric', 'float'];
+
+    private const array BOOLEAN_RULES = ['boolean', 'bool', 'accepted', 'accepted_if', 'declined', 'declined_if'];
+
+    private const array FILE_RULES = ['file', 'image', 'mimes', 'mimetypes', 'extensions', 'dimensions'];
+
+    private const array STRING_RULES = [
+        'string', 'alpha_num', 'email', 'url', 'active_url', 'date', 'date_format', 'date_equals', 'after', 'after_or_equal',
+        'before', 'before_or_equal', 'uuid', 'ulid', 'alpha', 'alpha_dash', 'ip', 'ipv4', 'ipv6', 'mac_address',
+        'json', 'timezone', 'hex_color', 'lowercase', 'uppercase', 'regex', 'not_regex', 'starts_with', 'ends_with',
+        'doesnt_start_with', 'doesnt_end_with', 'current_password',
+        // Digits rules usually guard zip codes, PINs and phone numbers, where leading zeros matter, and
+        // "decimal:2" checks the written form ("1.00"), which a number would lose.
+        'digits', 'digits_between', 'min_digits', 'max_digits', 'decimal',
+    ];
+
+    private const array ARRAY_RULES = ['array', 'list'];
+
     /**
-     * @var class-string[]
+     * Problems found while discovering or transforming requests. Each entry names the request it affected.
+     *
+     * @var list<string>
      */
-    private array $enumMap = [];
+    private array $warnings = [];
 
     public function getUseFormImportForProvider(string $provider): string
     {
@@ -38,77 +72,70 @@ class InertiaFormGenerator
     }
 
     /**
-     * @return FormRequest[]
+     * @return list<string>
+     */
+    public function warnings(): array
+    {
+        return $this->warnings;
+    }
+
+    /**
+     * Find every concrete FormRequest declared under app/ and the configured additional paths.
      *
-     * @throws ReflectionException
+     * @return list<FormRequest>
      */
     public function getFormRequests(): array
     {
-        $files = File::allFiles(app_path());
+        $excluded = array_map(
+            fn (string $class): string => ltrim($class, '\\'),
+            Config::get('inertia-form-generator.exclude') ?? [],
+        );
 
-        $psr4 = $this->psr4FromComposer(base_path());
+        $paths = [app_path(), ...Config::get('inertia-form-generator.additional_paths') ?? []];
 
-        $excluded = Config::get('inertia-form-generator.exclude', []);
+        $classes = [];
 
-        $formRequests = [];
+        foreach ($paths as $path) {
+            $path = $this->absolutePath($path);
 
-        foreach ($files as $file) {
-            $classPath = str_replace('/', '\\', $file->getRelativePathname());
-            $classPath = str_replace('.php', '', $classPath);
+            if (! is_dir($path)) {
+                $this->warnings[] = "Skipped path {$path}: directory not found.";
 
-            /** @var class-string $class */
-            $class = 'App\\'.$classPath;
-
-            if (in_array($class, $excluded, true)) {
                 continue;
             }
 
-            if (! class_exists($class)) {
-                continue;
-            }
-
-            $reflection = new ReflectionClass($class);
-
-            if ($reflection->isSubclassOf(FormRequest::class)) {
-                $instance = $this->createFormRequestInstance($reflection);
-
-                $formRequests[] = $instance;
-            }
-        }
-
-        foreach (Config::get('inertia-form-generator.additional_paths', []) as $path) {
-            $files = File::allFiles($path);
-
-            foreach ($files as $file) {
-                $classPath = $file->getBasename();
-                $classPath = str_replace('.php', '', $classPath);
-
-                $class = $classPath;
-
-                foreach ($psr4 as $namespace => $namespacePath) {
-                    if (str_starts_with($file->getPath(), $namespacePath)) {
-                        $correctedPath = str_replace($namespacePath, $namespace, $file->getPath());
-                        $correctedPath = str_replace('/', '\\', $correctedPath);
-                        $class = $correctedPath.'\\'.$classPath;
-                        break;
-                    }
-                }
-
-                if (! class_exists($class)) {
+            foreach (File::allFiles($path) as $file) {
+                if ($file->getExtension() !== 'php') {
                     continue;
                 }
 
-                if (in_array($class, $excluded, true)) {
+                foreach ($this->classesInFile($file->getPathname()) as $class) {
+                    if (! in_array($class, $excluded, true)) {
+                        $classes[$class] = true;
+                    }
+                }
+            }
+        }
+
+        ksort($classes);
+
+        $formRequests = [];
+
+        foreach (array_keys($classes) as $class) {
+            try {
+                if (! class_exists($class)) {
                     continue;
                 }
 
                 $reflection = new ReflectionClass($class);
 
-                if ($reflection->isSubclassOf(FormRequest::class)) {
-                    $instance = $this->createFormRequestInstance($reflection);
-
-                    $formRequests[] = $instance;
+                if (! $reflection->isSubclassOf(FormRequest::class) || ! $reflection->isInstantiable()) {
+                    continue;
                 }
+
+                $formRequests[] = $this->createFormRequestInstance($reflection);
+            } catch (Throwable $e) {
+                $this->warnings[] = "Skipped {$class}: {$e->getMessage()}";
             }
         }
 
@@ -116,59 +143,71 @@ class InertiaFormGenerator
     }
 
     /**
-     * @return array<string, string>
+     * Resolve a configured path against the application root unless it is already absolute.
      */
-    private function psr4FromComposer(string $projectRoot): array
+    public function absolutePath(string $path): string
     {
-        $composerFile = rtrim($projectRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'composer.json';
-
-        if (! is_file($composerFile)) {
-            throw new \RuntimeException("composer.json not found at {$composerFile}");
+        if (str_starts_with($path, DIRECTORY_SEPARATOR) || preg_match('/^[A-Za-z]:[\\\\\/]/', $path)) {
+            return $path;
         }
 
-        $contents = file_get_contents($composerFile);
-        if ($contents === false) {
-            throw new \RuntimeException("Unable to read composer.json at {$composerFile}");
+        return base_path($path);
+    }
+
+    /**
+     * Read the fully qualified names of the classes declared in a file without loading it,
+     * so that discovery never executes scripts or helper files.
+     *
+     * @return list<string>
+     */
+    private function classesInFile(string $path): array
+    {
+        $contents = file_get_contents($path);
+
+        if ($contents === false || stripos($contents, 'class') === false) {
+            return [];
         }
 
-        $json = json_decode($contents, true, flags: JSON_THROW_ON_ERROR);
+        $tokens = array_values(array_filter(
+            PhpToken::tokenize($contents),
+            fn (PhpToken $token): bool => ! $token->is([T_WHITESPACE, T_COMMENT, T_DOC_COMMENT]),
+        ));
 
-        $psr4 = [];
+        $namespace = '';
+        $classes = [];
 
-        foreach (['autoload', 'autoload-dev'] as $section) {
-            if (! isset($json[$section]['psr-4'])) {
+        foreach ($tokens as $i => $token) {
+            if ($token->is(T_NAMESPACE) && isset($tokens[$i + 1])) {
+                // "namespace { ... }" declares the global namespace.
+                $namespace = $tokens[$i + 1]->is([T_NAME_QUALIFIED, T_STRING]) ? $tokens[$i + 1]->text.'\\' : '';
+            }
+
+            if (! $token->is(T_CLASS)) {
                 continue;
             }
 
-            foreach ($json[$section]['psr-4'] as $namespace => $paths) {
-                foreach ((array) $paths as $path) {
-                    $absolute = realpath(
-                        rtrim($projectRoot, DIRECTORY_SEPARATOR)
-                        .DIRECTORY_SEPARATOR
-                        .rtrim($path, DIRECTORY_SEPARATOR)
-                    );
+            // Skip `Foo::class` and `new class`.
+            if (isset($tokens[$i - 1]) && $tokens[$i - 1]->is([T_DOUBLE_COLON, T_NEW])) {
+                continue;
+            }
 
-                    if ($absolute === false) {
-                        continue;
-                    }
-
-                    $psr4[$namespace] = rtrim($absolute, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
-                }
+            if (isset($tokens[$i + 1]) && $tokens[$i + 1]->is(T_STRING)) {
+                $classes[] = $namespace.$tokens[$i + 1]->text;
             }
         }
 
-        return $psr4;
+        return $classes;
     }
 
     /**
      * @param  ReflectionClass<FormRequest>  $class
-     *
-     * @throws ReflectionException
      */
     private function createFormRequestInstance(ReflectionClass $class): FormRequest
     {
+        // build() resolves constructor dependencies without firing the container's
+        // resolving callbacks, which would otherwise validate the empty request.
         /** @var FormRequest $formRequest */
-        $formRequest = $class->newInstance();
+        $formRequest = app()->build($class->getName());
 
         $request = new Request;
 
@@ -187,7 +226,10 @@ class InertiaFormGenerator
         /** @var class-string<Model>|null $userClass */
         $userClass = Config::get('inertia-form-generator.user-model');
         if ($userClass && method_exists($userClass, 'factory')) {
-            $formRequest->setUserResolver(fn () => $userClass::factory()->make());
+            $user = null;
+            $formRequest->setUserResolver(function () use (&$user, $userClass) {
+                return $user ??= $userClass::factory()->make();
+            });
         } else {
             $formRequest->setUserResolver($request->getUserResolver());
         }
@@ -197,434 +239,586 @@ class InertiaFormGenerator
 
     /**
      * @param  FormRequest[]  $formRequests
-     * @return list<array{formName: string, initial: string}>
-     *
-     * @throws ReflectionException
+     * @return list<TransformedRequest>
      */
     public function transformRequests(array $formRequests): array
     {
         $transformed = [];
+        $names = [];
 
         foreach ($formRequests as $instance) {
-            $rules = method_exists($instance, 'rules') ? $instance->rules() : [];
-
-            $properties = $this->transformRulesToTypeScriptProperties($rules);
-
-            $keyedProperties = [];
-            foreach ($properties as $property) {
-                // split at ": " to get the property name and value
-                $split = explode(': ', $property);
-                $keyedProperties[$split[0]] = $split[1];
-            }
-
-            $undot = Arr::undot($keyedProperties);
-
-            $cleaned = $this->cleanArray($undot);
-
-            if (empty($cleaned)) {
-                continue;
-            }
-
-            // sort the keys alphabetically
-            ksort($cleaned);
-
             $class = get_class($instance);
-            $typeName = str_replace('App\\Http\\Requests\\', '', $class);
-            $typeName = str_replace('\\', '', $typeName);
 
-            $formName = Str::of($typeName)->camel()->append('Form');
+            try {
+                $rules = method_exists($instance, 'rules') ? app()->call([$instance, 'rules']) : [];
+                $tree = $this->buildTree(is_array($rules) ? $rules : []);
 
-            $initial = $this->buildInitialFromCleaned($cleaned);
+                if ($tree === []) {
+                    continue;
+                }
 
-            $transformed[] = [
-                'formName' => $formName->toString(),
-                'initial' => $initial,
-            ];
+                $name = $this->formNameFor($class);
+
+                if (isset($names[$name])) {
+                    $this->warnings[] = "Skipped {$class}: its generated name {$name} is already used by {$names[$name]}.";
+
+                    continue;
+                }
+
+                $transformed[] = [
+                    'name' => $name,
+                    'type' => $this->renderType($tree, ''),
+                    'initial' => $this->renderInitial($tree, ''),
+                ];
+                $names[$name] = $class;
+            } catch (Throwable $e) {
+                $this->warnings[] = "Skipped {$class}: {$e->getMessage()}";
+            }
         }
 
         return $transformed;
     }
 
-    /**
-     * @param  array<string, mixed>  $rules
-     * @return array<string>
-     *
-     * @throws ReflectionException
-     */
-    protected function transformRulesToTypeScriptProperties(array $rules): array
+    private function formNameFor(string $class): string
     {
-        $properties = [];
+        // Anonymous classes are named "Parent@anonymous<NUL>/path/to/file.php:line$0".
+        $class = Str::before($class, '@anonymous');
+
+        $prefix = app()->getNamespace().'Http\\Requests\\';
+        if (str_starts_with($class, $prefix)) {
+            $class = substr($class, strlen($prefix));
+        }
+
+        return collect(explode('\\', $class))
+            ->map(fn (string $segment): string => Str::studly($segment))
+            ->implode('');
+    }
+
+    /**
+     * Turn Laravel's dotted field paths into a tree, so a parent keeps its own rules alongside its children
+     * regardless of the order the rules are declared in.
+     *
+     * @param  array<array-key, mixed>  $rules
+     * @return array<string, Node>
+     */
+    private function buildTree(array $rules): array
+    {
+        $tree = [];
 
         foreach ($rules as $field => $ruleSet) {
-            $type = $this->mapValidationRulesToType($ruleSet);
-            $properties[] = sprintf('%s: %s;', $field, $type);
-        }
+            $segments = $this->splitPath((string) $field);
 
-        return $properties;
-    }
+            $normalized = $this->normalizeRules($ruleSet);
+            $tree = $this->insertNode($tree, $segments, $normalized);
 
-    /**
-     * @param  string|array<int, mixed>  $rules
-     *
-     * @throws ReflectionException
-     *
-     * @phpstan-ignore parameter.deprecatedInterface
-     */
-    protected function mapValidationRulesToType(string|array|Rule $rules): string
-    {
-        $rules = Arr::wrap(is_string($rules) ? explode('|', $rules) : $rules);
-
-        $type = 'unknown';
-
-        if ($this->hasOverridenRule($rules)) {
-            return $this->getOverridenRule($rules);
-        }
-
-        if ($this->hasClassBasedRule($rules)) {
-            $type = $this->getTypeFromClassBasedRule($rules);
-        }
-
-        if ($type === 'unknown') {
-            if ($this->hasStringStyleInRule($rules)) {
-                foreach ($rules as $rule) {
-                    if (is_string($rule) && Str::startsWith($rule, 'in:')) {
-                        // Only return the list of values if it's not "numeric"
-                        if (in_array('numeric', $rules, true) || in_array('integer', $rules, true)) {
-                            return 'number';
-                        }
-
-                        return Str::of($rule)->after('in:')->explode(',')->map(fn ($val): string => "'".trim((string) $val)."'")->implode(' | ');
-                    }
-                }
-            }
-            if ($this->hasRule($rules, ['alpha_num'])) {
-                $type = 'string | number';
-            } elseif ($this->hasRule($rules, ['integer', 'numeric', 'int', 'float'])) {
-                $type = 'number';
-            } elseif ($this->hasRule($rules, ['string', 'email', 'url', 'date_format', 'date'])) {
-                $type = 'string';
-            } elseif ($this->hasRule($rules, ['boolean', 'bool', 'accepted', 'declined'])) {
-                $type = 'boolean';
-            } elseif ($this->hasRule($rules, ['file', 'image'])) {
-                $type = 'File | null';
-            } elseif ($this->hasRule($rules, ['array'])) {
-                $type = 'unknown[]';
-            }
-        }
-
-        if ($this->hasRule($rules, ['nullable'])) {
-            $type .= ' | null';
-        }
-
-        if (Str::contains($type, 'unknown')) {
-            return 'unknown';
-        }
-
-        return str_replace('null | null', 'null', $type);
-    }
-
-    /**
-     * @param  array<int, mixed>  $rules
-     * @param  array<int, string>  $ruleNames
-     */
-    protected function hasRule(array $rules, array $ruleNames): bool
-    {
-        return array_any($rules,
-            fn ($rule) => is_string($rule) && (in_array($rule, $ruleNames, true) || Str::startsWith($rule, array_map(fn ($name): string => $name.':', $ruleNames))));
-    }
-
-    /**
-     * @param  array<int, mixed>  $rules
-     */
-    protected function hasClassBasedRule(array $rules): bool
-    {
-        return array_any($rules, fn ($rule) => is_object($rule));
-    }
-
-    /**
-     * @param  array<int, mixed>  $rules
-     */
-    protected function hasOverridenRule(array $rules): bool
-    {
-        $overrides = array_keys(Config::get('inertia-form-generator.custom_mappings'));
-
-        return array_any($rules, function ($rule) use ($overrides) {
-            if (is_object($rule)) {
-                return in_array(get_class($rule), $overrides, true);
-            }
-
-            return is_string($rule) && in_array($rule, $overrides, true);
-        });
-    }
-
-    /**
-     * @param  array<int, mixed>  $rules
-     */
-    protected function getOverridenRule(array $rules): string
-    {
-        $overrides = Config::get('inertia-form-generator.custom_mappings');
-
-        foreach ($rules as $rule) {
-            if (is_object($rule)) {
-                return $overrides[get_class($rule)];
-            }
-            if (in_array((string) $rule, array_keys($overrides), true)) {
-                return $overrides[(string) $rule];
-            }
-        }
-
-        return 'unknown';
-    }
-
-    /**
-     * @param  array<int, mixed>  $rules
-     *
-     * @throws ReflectionException
-     */
-    protected function getTypeFromClassBasedRule(array $rules): string
-    {
-        $result = 'unknown';
-        foreach ($rules as $rule) {
-            switch ($rule) {
-                case $rule instanceof In:
-                    // Only return the list of values if it's not "numeric"
-                    if (in_array('numeric', $rules, true) || in_array('integer', $rules, true)) {
-                        return 'number';
-                    }
-
-                    $val = Str::of($rule->__toString())->after('in:')->explode(',')->implode(' | ');
-                    if ($val === '') {
-                        return 'string';
-                    }
-
-                    return $val;
-                case $rule instanceof Enum:
-                    $reflection = new ReflectionClass($rule);
-                    $enumClass = $reflection->getProperty('type')->getValue($rule);
-                    if (! is_string($enumClass) || ! class_exists($enumClass)) {
-                        return 'string';
-                    }
-                    // Convert to typescript format
-                    $typeName = str_replace('\\', '.', $enumClass);
-                    // Add to enum map for later use.
-                    $this->enumMap[(string) $typeName] = $enumClass;
-
-                    return $typeName;
-                case $rule instanceof RequiredIf:
-                case $rule instanceof Unique:
-                case $rule instanceof Dimensions:
-                case is_object($rule):
-                case is_callable($rule):
-                    return 'unknown';
-                case $rule instanceof ArrayRule:
-                    $keys = Str::of($rule->__toString())->after('array:')->explode(',')->map(fn ($key): string => trim((string) $key).': unknown')->implode(';');
-
-                    return '{'.$keys.'}';
-                case is_string($rule):
-                    // do nothing
-                    break;
-                default:
-                    // do nothing
-            }
-        }
-
-        return $result;
-    }
-
-    /**
-     * @param  array<int, mixed>  $rules
-     */
-    protected function hasStringStyleInRule(array $rules): bool
-    {
-        return array_any($rules, fn ($rule) => is_string($rule) && Str::startsWith($rule, 'in:'));
-    }
-
-    /**
-     * @param  string|array<int, mixed>  $rules
-     *
-     * @phpstan-ignore parameter.deprecatedInterface
-     */
-    protected function isRequired(string|array|Rule $rules): bool
-    {
-        $rules = is_string($rules) ? explode('|', $rules) : (array) $rules;
-
-        return $this->hasRule($rules, ['required']);
-    }
-
-    /**
-     * @param  array<string, mixed>  $array
-     * @return array<string, mixed>
-     */
-    protected function cleanArray(array $array): array
-    {
-        $result = [];
-        foreach ($array as $key => $val) {
-            $isNullable = is_string($val) && str_contains($val, '| null') ? '_nullable' : '';
-
-            if (is_array($val)) {
-                if (array_key_exists('*', $val)) {
-                    $subVal = $val['*'];
-                    if (is_array($subVal)) {
-                        $result[$key.'_array_of'.$isNullable] = $this->cleanArray($subVal);
-                    } else {
-                        $result[$key.'_array_of'.$isNullable] = $subVal;
-                    }
+            // "confirmed" validates against another field the form also has to send: "<field>_confirmation"
+            // by default, or the full path given as the rule's parameter.
+            $confirmation = $this->ruleParameters($normalized, 'confirmed');
+            if ($confirmation !== null) {
+                if (isset($confirmation[0]) && $confirmation[0] !== '') {
+                    $segments = $this->splitPath($confirmation[0]);
                 } else {
-                    $result[$key.$isNullable] = $this->cleanArray($val);
+                    $segments[] = array_pop($segments).'_confirmation';
                 }
-            } else {
-                $result[$key.$isNullable] = $val;
+
+                if (! $this->hasNode($tree, $segments)) {
+                    // The confirmation must match, so it gets the same rules (siblings are only made for declared fields).
+                    $tree = $this->insertNode($tree, $segments, $normalized);
+                }
             }
         }
 
-        return $result;
+        return $tree;
     }
 
     /**
-     * @param  array<string, mixed>  $cleaned
-     */
-    private function buildInitialFromCleaned(array $cleaned): string
-    {
-        $lines = $this->initialObjectLines($cleaned, '  ');
-
-        return '{'.PHP_EOL.implode('', $lines).'}';
-    }
-
-    /**
-     * @param  array<string, mixed>  $node
+     * Split a Laravel field path on its dots. Laravel escapes literal dots in field names as "\.".
+     *
      * @return list<string>
      */
-    private function initialObjectLines(array $node, string $indent): array
+    private function splitPath(string $field): array
     {
-        $out = [];
-
-        foreach ($node as $rawKey => $val) {
-            $isArrayOf = str_contains($rawKey, '_array_of');
-            $isNullable = str_contains($rawKey, '_nullable');
-
-            $key = str_replace(['_array_of', '_nullable'], '', $rawKey);
-
-            // quote unsafe keys
-            if (str_contains($key, ' ') || str_contains($key, '-')) {
-                $key = '"'.$key.'"';
-            }
-
-            if (is_array($val)) {
-                if ($isArrayOf) {
-                    // arrays default to [] (nullable -> null)
-                    $out[] = $indent.$key.': '.($isNullable ? 'null' : '[]').','.PHP_EOL;
-                } else {
-                    // nested object
-                    $children = $this->initialObjectLines($val, $indent.'  ');
-                    $body = '{'.PHP_EOL.implode('', $children).$indent.'}';
-                    $out[] = $indent.$key.': '.($isNullable ? 'null' : $body).','.PHP_EOL;
-                }
-            } else {
-                // leaf: $val is a TS type string like "string", "number", "boolean", "File", "unknown[]", unions, etc.
-                $ts = (string) $val;
-
-                $asType = rtrim($ts, ';');
-                if ($asType === 'unknown') {
-                    $asString = '';
-                } else {
-                    $asType .= ' | undefined';
-                    if ($isArrayOf) {
-                        $asType = 'Array<'.$asType.'>';
-                    }
-
-                    $asString = ' as '.$asType;
-                }
-
-                $default = $this->defaultForTsType($ts, $isNullable, $isArrayOf).$asString;
-
-                $out[] = $indent.$key.': '.$default.','.PHP_EOL;
-            }
-        }
-
-        return $out;
+        return array_map(
+            fn (string $segment): string => str_replace('\\.', '.', $segment),
+            preg_split('/(?<!\\\\)\./', $field) ?: [$field],
+        );
     }
 
     /**
-     * Heuristics for initial values from TS type strings.
+     * @param  array<string, Node>  $children
+     * @param  list<string>  $segments
      */
-    private function defaultForTsType(string $ts, bool $nullable, bool $arrayOf): string
+    private function hasNode(array $children, array $segments): bool
     {
+        $segment = array_shift($segments);
 
-        // if we have a set of literal string values, pick the first one
-        if (! $arrayOf && str_contains($ts, '|')) {
-            $parts = explode('|', $ts);
-            $first = trim($parts[0]);
-            if ((str_contains($first, '"') || str_contains($first, "'")) && ! str_contains($first, '[]')) {
-                return $first;
+        if ($segment === null || ! array_key_exists($segment, $children)) {
+            return false;
+        }
+
+        /** @var array<string, Node> $grandchildren */
+        $grandchildren = $children[$segment]['children'];
+
+        return $segments === [] || $this->hasNode($grandchildren, $segments);
+    }
+
+    /**
+     * @param  array<string, Node>  $children
+     * @param  list<string>  $segments
+     * @param  list<mixed>  $rules
+     * @return array<string, Node>
+     */
+    private function insertNode(array $children, array $segments, array $rules): array
+    {
+        $segment = array_shift($segments);
+
+        if ($segment === null) {
+            return $children;
+        }
+
+        $node = $children[$segment] ?? ['rules' => null, 'children' => []];
+
+        if ($segments === []) {
+            $node['rules'] = $rules;
+        } else {
+            /** @var array<string, Node> $grandchildren */
+            $grandchildren = $node['children'];
+            $node['children'] = $this->insertNode($grandchildren, $segments, $rules);
+        }
+
+        $children[$segment] = $node;
+
+        return $children;
+    }
+
+    /**
+     * Flatten a rule set into a list of string rules plus the rule objects that need special handling.
+     * Laravel's fluent rule objects (Rule::numeric(), Rule::date(), Rule::requiredIf(), ...) are expanded
+     * into their string form; the object itself is kept so custom mappings can still match its class.
+     *
+     * @return list<mixed>
+     */
+    private function normalizeRules(mixed $ruleSet): array
+    {
+        $rules = match (true) {
+            is_string($ruleSet) => explode('|', $ruleSet),
+            is_array($ruleSet) => array_values($ruleSet),
+            default => [$ruleSet],
+        };
+
+        $normalized = [];
+
+        foreach ($rules as $rule) {
+            if (is_string($rule)) {
+                // Laravel trims the rule name but not its parameters, so neither do we.
+                if (trim($rule) !== '') {
+                    $normalized[] = ltrim($rule);
+                }
+
+                continue;
+            }
+
+            if (! is_object($rule)) {
+                continue;
+            }
+
+            // Rule::when(): use whichever branch applies to an empty request.
+            if ($rule instanceof ConditionalRules) {
+                try {
+                    $branch = $rule->passes() ? $rule->rules() : $rule->defaultRules();
+                } catch (Throwable) {
+                    continue;
+                }
+
+                array_push($normalized, ...$this->normalizeRules($branch));
+
+                continue;
+            }
+
+            $normalized[] = $rule;
+
+            // Laravel 13's fluent rules (Rule::requiredArrayKeys(), Rule::confirmed(), ...) describe
+            // themselves as [name, ...parameters] instead of a string.
+            if ($rule instanceof ParameterizedRule) {
+                [$name, $parameters] = [(string) ($rule->toArray()[0] ?? ''), array_slice($rule->toArray(), 1)];
+
+                $normalized[] = $parameters === [] ? $name : $name.':'.implode(',', array_map(
+                    fn (mixed $parameter): string => '"'.str_replace('"', '""', (string) $parameter).'"',
+                    $parameters,
+                ));
+
+                continue;
+            }
+
+            if ($rule instanceof Enum || $rule instanceof Closure) {
+                continue;
+            }
+
+            // Fluent rules that cannot be cast to a rule string.
+            $equivalent = match (true) {
+                $rule instanceof FileRule => 'file',
+                $rule instanceof Email, $rule instanceof Password => 'string',
+                default => null,
+            };
+
+            if ($equivalent !== null) {
+                $normalized[] = $equivalent;
+
+                continue;
+            }
+
+            if ($rule instanceof Stringable) {
+                try {
+                    $string = (string) $rule;
+                } catch (Throwable) {
+                    continue;
+                }
+
+                // Only these fluent rules join several rules with "|". Any other rule's string can
+                // legitimately contain "|" (a regex alternation, an "in" value, a where clause).
+                $compound = $rule instanceof ArrayRule || $rule instanceof Date
+                    || $rule instanceof Numeric || $rule instanceof StringRule;
+                $pieces = $compound ? explode('|', $string) : [$string];
+
+                foreach ($pieces as $piece) {
+                    if (trim($piece) !== '') {
+                        $normalized[] = ltrim($piece);
+                    }
+                }
             }
         }
 
-        if (! $arrayOf && str_contains($ts, "'")) {
-            return trim($ts, ';');
+        return $normalized;
+    }
+
+    /**
+     * @param  array<string, Node>  $children
+     */
+    private function renderType(array $children, string $indent): string
+    {
+        $lines = [];
+
+        foreach ($children as $key => $node) {
+            $lines[] = $indent.self::INDENT.$this->propertyKey($key).': '.$this->nodeField($node, $indent.self::INDENT)['type'].';';
         }
 
-        // Arrays
-        if (! $nullable && ($arrayOf || preg_match('/\bArray<.*>\[]?|\bunknown\[]/', $ts))) {
-            return '[]';
+        return '{'.PHP_EOL.implode(PHP_EOL, $lines).PHP_EOL.$indent.'}';
+    }
+
+    /**
+     * @param  array<string, Node>  $children
+     */
+    private function renderInitial(array $children, string $indent): string
+    {
+        $lines = [];
+
+        foreach ($children as $key => $node) {
+            $lines[] = $indent.self::INDENT.$this->propertyKey($key).': '.$this->nodeField($node, $indent.self::INDENT)['default'].',';
         }
+
+        return '{'.PHP_EOL.implode(PHP_EOL, $lines).PHP_EOL.$indent.'}';
+    }
+
+    /**
+     * @param  Node  $node
+     * @return Field
+     */
+    private function nodeField(array $node, string $indent, bool $element = false): array
+    {
+        $rules = $node['rules'] ?? [];
+        /** @var array<string, Node> $children */
+        $children = $node['children'];
+
+        // "required_array_keys:home,away" makes the value an object with (at least) those keys,
+        // each validated by the wildcard rule when there is one.
+        foreach ($this->ruleParameters($rules, 'required_array_keys') ?? [] as $key) {
+            $children[$key] ??= $children['*'] ?? ['rules' => [], 'children' => []];
+        }
+        // Index rules ("tags.0") alongside a wildcard refine a list rather than describe an object.
+        $named = array_filter(
+            array_diff_key($children, ['*' => true]),
+            fn (string|int $key): bool => ! (array_key_exists('*', $children) && ctype_digit((string) $key)),
+            ARRAY_FILTER_USE_KEY,
+        );
+        $override = $this->overrideFor($rules);
+
+        if ($children === [] || $override !== null) {
+            $field = $this->scalarField($rules);
+        } elseif ($named !== []) {
+            // Named children ("translations.en") describe an object, even alongside a wildcard.
+            $field = [
+                'type' => $this->renderType($named, $indent),
+                'default' => $this->renderInitial($named, $indent),
+            ];
+        } else {
+            $elementType = $this->nodeField($children['*'], $indent, true)['type'];
+            $keys = $this->allowedArrayKeys($rules);
+
+            // "array:en,fr" with "translations.*" validates each value of a keyed array.
+            $field = $keys !== null
+                ? ['type' => 'Record<string, '.$elementType.'>', 'default' => '{}']
+                : ['type' => 'Array<'.$elementType.'>', 'default' => '[]'];
+        }
+
+        $nullable = $this->hasRule($rules, ['nullable']);
 
         if ($nullable) {
-            return 'null';
+            $field['default'] = 'null';
         }
 
-        // Literal unions like: `'a' | 'b' | 'c'`
-        if (preg_match("/^'[^']*'(?:\s*\|\s*'[^']*')+$/", trim($ts))) {
-            return "''"; // neutral empty; avoids picking a value accidentally
+        if ($nullable || (! $element && $field['default'] === 'null')) {
+            $field['type'] = $this->withMember($field['type'], 'null');
         }
 
-        // string-ish
-        if (str_contains($ts, 'string')) {
-            return "''";
+        if ($element) {
+            return $field;
         }
 
-        // number-ish
-        if (str_contains($ts, 'number')) {
-            return '0';
+        // An untouched "sometimes" field should be left out of the submitted payload.
+        if ($this->hasRule($rules, ['sometimes'])) {
+            $field = ['type' => $this->withMember($field['type'], 'undefined'), 'default' => 'undefined'];
         }
 
-        // boolean
-        if (str_contains($ts, 'boolean')) {
-            return 'false';
+        return $field;
+    }
+
+    /**
+     * @param  list<mixed>  $rules
+     * @return Field
+     */
+    private function scalarField(array $rules): array
+    {
+        $override = $this->overrideFor($rules);
+        if ($override !== null) {
+            // Function and conditional types bind looser than "|", so wrap them before members are added.
+            $type = str_contains($override, '=>') || str_contains($override, ' extends ') ? '('.$override.')' : $override;
+
+            return ['type' => $type, 'default' => match (trim($override)) {
+                'string' => "''",
+                'number' => '0',
+                'boolean' => 'false',
+                default => 'null',
+            }];
         }
 
-        // File / Uploadables
-        if (preg_match('/\bFile\b/i', $ts)) {
-            return 'null';
-        }
-
-        // object-ish unknown
-        if ($ts === 'unknown;') {
-            return "''";
-        }
-
-        // enums like App.Enums.Status -> attempt to get the first value
-        if (preg_match('/^[A-Za-z0-9_.]+$/', trim($ts, ';'))) {
-            $trimmed = trim($ts, ';');
-            if (array_key_exists($trimmed, $this->enumMap)) {
-                $cases = $this->enumMap[$trimmed]::cases();
-                if (count($cases) === 0) {
-                    return 'null';
-                }
-
-                $firstValue = $cases[0]->value;
-
-                if (is_int($firstValue)) {
-                    return (string) $firstValue;
-                }
-
-                // replace any \ with \\
-                $firstValue = str_replace('\\', '\\\\', $firstValue);
-
-                return "'".$firstValue."'";
+        foreach ($rules as $rule) {
+            if ($rule instanceof Enum) {
+                return $this->enumField($rule);
             }
         }
 
-        // fallback
-        return 'null';
+        $in = $this->ruleParameters($rules, 'in');
+        if ($in !== null) {
+            return $this->inField($rules, $in);
+        }
+
+        $arrayKeys = $this->allowedArrayKeys($rules);
+
+        return match (true) {
+            // "numeric|digits:5" and "numeric|decimal:2" check the written form ("01234", "10.50"), which a
+            // number would lose. "integer" rejects leading zeros anyway, so it stays a number.
+            $this->hasRule($rules, ['digits', 'digits_between', 'min_digits', 'max_digits', 'decimal']) && ! $this->hasRule($rules, ['integer', 'int']) => ['type' => 'string', 'default' => "''"],
+            $this->hasRule($rules, self::NUMBER_RULES) => ['type' => 'number', 'default' => '0'],
+            $this->hasRule($rules, self::STRING_RULES) => ['type' => 'string', 'default' => "''"],
+            $this->hasRule($rules, self::BOOLEAN_RULES) => ['type' => 'boolean', 'default' => 'false'],
+            $this->hasRule($rules, self::FILE_RULES) => ['type' => 'File | null', 'default' => 'null'],
+            // "array:a,b" restricts the keys, so the value is an object rather than a list.
+            $arrayKeys !== null => ['type' => 'Record<string, any>', 'default' => '{}'],
+            $this->hasRule($rules, self::ARRAY_RULES) => ['type' => 'any[]', 'default' => '[]'],
+            // A confirmed field with no other type rule is almost always a password or an email.
+            $this->hasRule($rules, ['confirmed']) => ['type' => 'string', 'default' => "''"],
+            default => ['type' => 'any', 'default' => "''"],
+        };
+    }
+
+    /**
+     * @return Field
+     */
+    private function enumField(Enum $rule): array
+    {
+        /** @var class-string<UnitEnum>|mixed $enumClass */
+        $enumClass = (fn () => $this->type)->call($rule);
+
+        if (! is_string($enumClass) || ! enum_exists($enumClass)) {
+            return ['type' => 'string', 'default' => "''"];
+        }
+
+        $type = str_replace('\\', '.', ltrim($enumClass, '\\'));
+
+        $allowed = array_values(array_filter(
+            $enumClass::cases(),
+            fn (UnitEnum $case): bool => (bool) (fn () => $this->isDesirable($case))->call($rule),
+        ));
+
+        if ($allowed === [] || ! property_exists($allowed[0], 'value')) {
+            return ['type' => $type, 'default' => 'null'];
+        }
+
+        return ['type' => $type, 'default' => $this->literal($allowed[0]->value).' as '.$type];
+    }
+
+    /**
+     * @param  list<mixed>  $rules
+     * @param  list<string>  $values
+     * @return Field
+     */
+    private function inField(array $rules, array $values): array
+    {
+        if ($values === []) {
+            return ['type' => 'string', 'default' => "''"];
+        }
+
+        $isArray = $this->hasRule($rules, self::ARRAY_RULES);
+
+        // Only values whose written form survives a round trip through a number ("3", "-1.5", not "1.00").
+        $numeric = array_filter(
+            $values,
+            fn (string $value): bool => is_numeric($value) && is_finite((float) $value) && (string) ($value + 0) === $value
+                // JavaScript cannot represent integers beyond 2^53 exactly.
+                && abs((float) $value) <= 9007199254740991,
+        );
+
+        if ($this->hasRule($rules, self::NUMBER_RULES) && count($numeric) === count($values)) {
+            $literals = array_map(fn (string $value): string => is_numeric($value) ? (string) ($value + 0) : '0', $values);
+            $type = implode(' | ', array_unique($literals));
+            $default = $literals[0];
+        } else {
+            // Strings, or numbers Laravel only accepts in their written form ("1.00", "007").
+            $literals = array_map(fn (string $value): string => $this->literal($value), $values);
+            $type = implode(' | ', array_unique($literals));
+            $default = $literals[0];
+        }
+
+        return $isArray
+            ? ['type' => 'Array<'.$type.'>', 'default' => '[]']
+            : ['type' => $type, 'default' => $default];
+    }
+
+    /**
+     * @param  list<mixed>  $rules
+     */
+    private function overrideFor(array $rules): ?string
+    {
+        $overrides = [];
+        foreach (Config::get('inertia-form-generator.custom_mappings') ?? [] as $key => $type) {
+            $overrides[ltrim((string) $key, '\\')] = (string) $type;
+        }
+
+        foreach ($rules as $rule) {
+            if (! is_object($rule)) {
+                continue;
+            }
+
+            if (array_key_exists(get_class($rule), $overrides)) {
+                return $overrides[get_class($rule)];
+            }
+
+            // Also match subclasses, e.g. a mapping for Rules\File applies to File::image().
+            foreach ($overrides as $class => $type) {
+                if (is_a($rule, $class)) {
+                    return $type;
+                }
+            }
+        }
+
+        foreach ($rules as $rule) {
+            if (! is_string($rule)) {
+                continue;
+            }
+
+            if (array_key_exists($rule, $overrides)) {
+                return $overrides[$rule];
+            }
+
+            if (array_key_exists($this->ruleName($rule), $overrides)) {
+                return $overrides[$this->ruleName($rule)];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  list<mixed>  $rules
+     * @param  array<int, string>  $names
+     */
+    private function hasRule(array $rules, array $names): bool
+    {
+        return array_any($rules, fn ($rule): bool => is_string($rule) && in_array($this->ruleName($rule), $names, true));
+    }
+
+    /**
+     * The parameters of the first string rule called $name, parsed the way Laravel parses them,
+     * or null when there is no such rule.
+     *
+     * @param  list<mixed>  $rules
+     * @return list<string>|null
+     */
+    private function ruleParameters(array $rules, string $name): ?array
+    {
+        foreach ($rules as $rule) {
+            if (! is_string($rule) || $this->ruleName($rule) !== $name) {
+                continue;
+            }
+
+            if (! str_contains($rule, ':') || Str::after($rule, ':') === '') {
+                return [];
+            }
+
+            return array_map(
+                fn (?string $value): string => (string) $value,
+                str_getcsv(Str::after($rule, ':'), escape: '\\'),
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * The keys an array may contain, from "array:a,b" or Laravel 13's "array_keys:a,b", or null when unrestricted.
+     *
+     * @param  list<mixed>  $rules
+     * @return list<string>|null
+     */
+    private function allowedArrayKeys(array $rules): ?array
+    {
+        $keys = $this->ruleParameters($rules, 'array') ?: $this->ruleParameters($rules, 'array_keys');
+
+        return $keys === [] ? null : $keys;
+    }
+
+    private function ruleName(string $rule): string
+    {
+        return Str::snake(trim(Str::before($rule, ':')));
+    }
+
+    /**
+     * Add a member to a union type. Only the end of the type is checked: a nested type
+     * ("{ a: string | null }", "Array<T | null>") or a literal ("'a | null'") ends in a bracket or quote,
+     * so a trailing "| null" can only be a top-level member.
+     */
+    private function withMember(string $type, string $member): string
+    {
+        $type = rtrim($type);
+
+        if ($type === $member || preg_match('/\|\s*'.preg_quote($member, '/').'$/', $type)) {
+            return $type;
+        }
+
+        return $type.' | '.$member;
+    }
+
+    private function propertyKey(string $key): string
+    {
+        return preg_match('/^[A-Za-z_$][A-Za-z0-9_$]*$/', $key) ? $key : $this->literal($key);
+    }
+
+    private function literal(string|int|float $value): string
+    {
+        if (! is_string($value)) {
+            return (string) $value;
+        }
+
+        return json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
     }
 }
