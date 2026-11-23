@@ -2,6 +2,23 @@
 
 All notable changes to `inertia-form-generator` will be documented in this file.
 
+## v3.0.0 - 2026-11-23
+
+### BREAKING
+
+- Drops support for Laravel 11. The package now requires Laravel 12 or 13.
+
+### Added
+
+- Laravel 13 support.
+
+### Changed
+
+- Updated dev dependencies: Pest 5 / testbench 11 (for Laravel 13), with Pest 4 / testbench 10 still supported for Laravel 12.
+- CI now tests against Laravel 12 and 13.
+
+**Full Changelog**: https://github.com/robtesch/inertia-form-generator/compare/v2.2.0...v3.0.0
+
 ## Change output style - 2025-09-08
 
 ### BREAKING
